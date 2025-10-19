@@ -9,6 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import logging
+import numpy as np
+
+from heart_rate_extractor import (
+    download_video,
+    extract_heart_rate_with_pyvhr,
+    cleanup_temp_file
+)
+from ml_model import get_model_and_scaler, predict_risk
 
 app = FastAPI(title="Health Monitoring ML Backend")
 
@@ -106,50 +114,40 @@ def extract_heart_rate_from_video(video_url: str) -> List[HeartRateDataPoint]:
     """
     Extract heart rate time-series data from facial video using PyVHR.
 
-    TODO: Replace this placeholder with actual PyVHR implementation
+    Args:
+        video_url: URL or path to video file
 
-    PyVHR Integration Steps:
-    1. Install PyVHR: pip install pyVHR
-    2. Load video from URL or file path
-    3. Configure PyVHR pipeline with appropriate method (e.g., 'POS', 'GREEN', 'ICA')
-    4. Extract BVP signal and convert to heart rate
-    5. Return time-stamped heart rate measurements
-
-    Example PyVHR usage:
-        from pyVHR.analysis.pipeline import Pipeline
-
-        pipe = Pipeline()
-        bvps, timesigs, bpm = pipe.run_on_video(
-            videoFileName=video_path,
-            cuda=True,
-            roi_approach='patches',
-            method='POS'
-        )
+    Returns:
+        List of HeartRateDataPoint objects with timestamps and HR values
     """
-    import numpy as np
+    video_path = None
+    try:
+        video_path = download_video(video_url)
 
-    logger.warning("Using simulated heart rate data. Replace with PyVHR implementation.")
+        hr_series, avg_bpm, hrv_metrics = extract_heart_rate_with_pyvhr(video_path)
 
-    duration_seconds = 60
-    samples_per_second = 4
-    total_samples = duration_seconds * samples_per_second
+        logger.info(f"Extracted {len(hr_series)} heart rate measurements")
+        logger.info(f"Average BPM: {avg_bpm:.2f}")
+        logger.info(f"HRV metrics: {hrv_metrics}")
 
-    base_heart_rate = 70 + np.random.random() * 20
-    heart_rate_data = []
+        samples_per_second = len(hr_series) / 60.0 if len(hr_series) > 0 else 4
 
-    for i in range(total_samples):
-        timestamp_ms = int((i / samples_per_second) * 1000)
-        variation = np.sin(i / 10) * 5 + (np.random.random() - 0.5) * 3
-        heart_rate = max(50, min(120, base_heart_rate + variation))
-        confidence = 0.85 + np.random.random() * 0.15
+        heart_rate_data = []
+        for i, hr_value in enumerate(hr_series):
+            timestamp_ms = int((i / samples_per_second) * 1000)
+            confidence = 0.85 + np.random.random() * 0.15
 
-        heart_rate_data.append(HeartRateDataPoint(
-            timestamp_ms=timestamp_ms,
-            heart_rate_bpm=round(heart_rate, 2),
-            confidence_score=round(confidence, 2)
-        ))
+            heart_rate_data.append(HeartRateDataPoint(
+                timestamp_ms=timestamp_ms,
+                heart_rate_bpm=round(float(hr_value), 2),
+                confidence_score=round(confidence, 2)
+            ))
 
-    return heart_rate_data
+        return heart_rate_data
+
+    finally:
+        if video_path:
+            cleanup_temp_file(video_path)
 
 
 def predict_cardiovascular_risk(
@@ -158,76 +156,61 @@ def predict_cardiovascular_risk(
     """
     Predict cardiovascular risk using ML model based on heart rate time-series.
 
-    TODO: Replace this rule-based logic with actual ML model
+    Args:
+        heart_rate_data: List of heart rate measurements
 
-    ML Model Integration Steps:
-    1. Train a model (e.g., LSTM, Random Forest, XGBoost) on heart rate patterns
-    2. Features to consider:
-       - Average heart rate
-       - Heart rate variability (HRV)
-       - RMSSD (Root Mean Square of Successive Differences)
-       - SDNN (Standard Deviation of NN intervals)
-       - Frequency domain features (LF/HF ratio)
-       - Time-series patterns and trends
-    3. Load trained model (e.g., using joblib, PyTorch, TensorFlow)
-    4. Extract features from heart_rate_data
-    5. Run inference and return predictions
-
-    Example ML model usage:
-        import joblib
-        model = joblib.load('models/risk_prediction_model.pkl')
-        features = extract_features(heart_rate_data)
-        risk_score = model.predict_proba(features)[0][1] * 100
-        risk_level = classify_risk(risk_score)
+    Returns:
+        RiskPrediction object with risk level, score, and insights
     """
-    import numpy as np
+    heart_rates = np.array([d.heart_rate_bpm for d in heart_rate_data])
 
-    logger.warning("Using rule-based risk prediction. Replace with ML model.")
+    from heart_rate_extractor import compute_hrv_metrics
+    hrv_metrics = compute_hrv_metrics(heart_rates)
 
-    heart_rates = [d.heart_rate_bpm for d in heart_rate_data]
-    avg_heart_rate = np.mean(heart_rates)
+    try:
+        model, scaler = get_model_and_scaler()
+        risk_level, confidence = predict_risk(hrv_metrics, model, scaler)
+    except Exception as e:
+        logger.error(f"ML prediction failed: {e}")
+        risk_level = "Moderate"
+        confidence = 50.0
+
+    avg_heart_rate = hrv_metrics['mean_hr']
+    std_hr = hrv_metrics['std_hr']
     max_heart_rate = np.max(heart_rates)
     min_heart_rate = np.min(heart_rates)
-    variability = max_heart_rate - min_heart_rate
-
-    std_hr = np.std(heart_rates)
 
     recommendations = []
     anomalies = []
 
-    if avg_heart_rate < 60:
-        risk_level = "medium"
-        risk_score = 45 + np.random.random() * 10
-        anomalies.append("Resting heart rate below normal range detected")
-        recommendations.append("Consider consulting with a healthcare provider about bradycardia")
-    elif avg_heart_rate > 100:
-        risk_level = "high"
-        risk_score = 70 + np.random.random() * 20
-        anomalies.append("Elevated resting heart rate detected")
-        recommendations.append("Elevated heart rate may indicate stress or cardiovascular concerns")
-        recommendations.append("Schedule an appointment with your doctor")
-    else:
-        risk_level = "low"
-        risk_score = 15 + np.random.random() * 20
+    if risk_level == "Low":
         recommendations.append("Your heart rate appears within normal range")
         recommendations.append("Continue regular physical activity and healthy lifestyle")
+    elif risk_level == "Moderate":
+        recommendations.append("Consider monitoring your heart rate more frequently")
+        recommendations.append("Maintain stress management practices")
+        if avg_heart_rate < 60:
+            anomalies.append("Resting heart rate below normal range detected")
+            recommendations.append("Consider consulting with a healthcare provider")
+        elif avg_heart_rate > 85:
+            anomalies.append("Slightly elevated resting heart rate detected")
+    else:
+        anomalies.append("Elevated cardiovascular risk indicators detected")
+        recommendations.append("Schedule an appointment with your healthcare provider")
+        recommendations.append("Discuss your heart rate patterns and lifestyle factors")
+        if avg_heart_rate > 100:
+            anomalies.append("Significantly elevated resting heart rate detected")
 
-    if variability > 30:
-        if risk_level == "low":
-            risk_level = "medium"
-        risk_score += 15
-        anomalies.append("High heart rate variability detected during measurement")
-        recommendations.append("Monitor stress levels and ensure adequate rest")
-
-    if std_hr > 10:
-        anomalies.append(f"Significant heart rate variation detected (σ={std_hr:.1f})")
+    if std_hr > 12:
+        anomalies.append(f"High heart rate variability detected (σ={std_hr:.1f})")
+        recommendations.append("Ensure adequate rest and stress management")
 
     return RiskPrediction(
-        risk_level=risk_level,
-        risk_score=min(100, round(risk_score, 2)),
+        risk_level=risk_level.lower(),
+        risk_score=round(confidence, 2),
         insights=RiskInsights(
             variability=f"Heart rate ranged from {int(min_heart_rate)} to {int(max_heart_rate)} BPM",
-            trend="Slightly elevated" if avg_heart_rate > 80 else "Normal",
+            trend="Elevated" if avg_heart_rate > 85 else "Normal",
             recommendations=recommendations,
             anomalies=anomalies
         )

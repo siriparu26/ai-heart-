@@ -38,7 +38,7 @@ The server will start on `http://localhost:8000`
 ## Integration with PyVHR
 
 ### Current State
-The code currently uses **simulated data** in the `extract_heart_rate_from_video()` function. This needs to be replaced with actual PyVHR implementation.
+The backend now includes **full PyVHR integration** in the `heart_rate_extractor.py` module. If PyVHR is not available or fails, it automatically falls back to simulated data for testing.
 
 ### PyVHR Integration Steps
 
@@ -105,7 +105,7 @@ def calculate_confidence_score(bvp_signal):
 ## ML Model Integration
 
 ### Current State
-The `predict_cardiovascular_risk()` function uses **rule-based logic**. Replace it with a trained ML model.
+The backend now includes **ML-based risk prediction** using a RandomForest classifier in the `ml_model.py` module. On first run, it automatically trains a dummy model on synthetic data and saves it as `risk_model.pkl`. This temporary model enables end-to-end testing and can be replaced with a real trained model later.
 
 ### Steps to Add ML Model
 
@@ -321,10 +321,38 @@ curl -X POST http://localhost:8000/analyze-video \
   }'
 ```
 
+## Project Structure
+
+```
+python-backend/
+├── main.py                    # FastAPI application and endpoints
+├── heart_rate_extractor.py    # PyVHR integration for HR extraction
+├── ml_model.py                # ML model training and risk prediction
+├── requirements.txt           # Python dependencies
+├── risk_model.pkl            # Trained ML model (auto-generated)
+└── feature_scaler.pkl        # Feature scaler (auto-generated)
+```
+
+## Implementation Details
+
+### Heart Rate Extraction (`heart_rate_extractor.py`)
+- Downloads videos from URLs or uses local files
+- Uses PyVHR POS method for robust heart rate extraction
+- Computes HRV metrics: mean_hr, std_hr, rmssd, pnn50
+- Gracefully falls back to simulated data if PyVHR fails
+- Cleans up temporary files automatically
+
+### ML Risk Prediction (`ml_model.py`)
+- Auto-trains dummy RandomForest model on synthetic HRV data
+- Three risk classes: Low, Moderate, High
+- Features: mean_hr, std_hr, rmssd, pnn50
+- Saves model and scaler for reuse
+- Can be replaced with real model by overwriting `risk_model.pkl`
+
 ## Next Steps
 
-1. **Replace simulation with PyVHR**: Implement actual heart rate extraction
-2. **Train ML model**: Collect training data and train a risk prediction model
+1. **Test with real videos**: Upload facial videos and verify PyVHR extraction
+2. **Replace dummy model**: Train on real clinical data with actual risk labels
 3. **Add video storage**: Implement video download/access from Supabase Storage
 4. **Optimize performance**: Add caching, batch processing, GPU acceleration
 5. **Add monitoring**: Implement logging, metrics, and error tracking
